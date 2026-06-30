@@ -39,9 +39,10 @@ app = func.FunctionApp()
 # ---------------------------------------------------------------------------
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin":  "https://demo.komda-software.de",
+    "Access-Control-Allow-Origin":  "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key",
+    "Content-Type": "application/json",
 }
 
 
@@ -50,14 +51,13 @@ def json_resp(data, status_code: int = 200) -> func.HttpResponse:
     return func.HttpResponse(
         json.dumps(data, ensure_ascii=False),
         status_code=status_code,
-        mimetype="application/json",
         headers=CORS_HEADERS,
     )
 
 
 def options_resp() -> func.HttpResponse:
     """Antwortet auf CORS-Preflight-Anfragen."""
-    return func.HttpResponse(status_code=204, headers=CORS_HEADERS)
+    return func.HttpResponse("", status_code=200, headers=CORS_HEADERS)
 
 
 # ---------------------------------------------------------------------------
