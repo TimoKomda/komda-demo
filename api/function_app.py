@@ -35,6 +35,32 @@ from datetime import datetime, timezone
 app = func.FunctionApp()
 
 # ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin":  "https://demo.komda-software.de",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key",
+}
+
+
+def json_resp(data, status_code: int = 200) -> func.HttpResponse:
+    """Erstellt eine JSON-Response mit CORS-Headern."""
+    return func.HttpResponse(
+        json.dumps(data, ensure_ascii=False),
+        status_code=status_code,
+        mimetype="application/json",
+        headers=CORS_HEADERS,
+    )
+
+
+def options_resp() -> func.HttpResponse:
+    """Antwortet auf CORS-Preflight-Anfragen."""
+    return func.HttpResponse(status_code=204, headers=CORS_HEADERS)
+
+
+# ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
@@ -305,10 +331,13 @@ def send_internal_notification(sachbearbeiter_email: str, name: str,
 # Endpunkt: GET/POST /api/demo
 # ---------------------------------------------------------------------------
 
-@app.route(route="demo", methods=["GET", "POST"],
+@app.route(route="demo", methods=["GET", "POST", "OPTIONS"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def demo(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("demo: %s", req.method)
+
+    if req.method == "OPTIONS":
+        return options_resp()
 
     # ------------------------------------------------------------------
     # GET – Interessenten-Daten per Token (öffentlich)
@@ -320,90 +349,55 @@ def demo(req: func.HttpRequest) -> func.HttpResponse:
         # Alle Einträge für Management-Portal
         if not token:
             if not require_admin(req):
-                return func.HttpResponse(
-                    json.dumps({"error": "Unauthorized"}),
-                    status_code=401,
-                    mimetype="application/json",
-                )
+                return json_resp({"error": "Unauthorized"}, 401)
             try:
                 graph_token = get_app_token()
                 items = get_all_items(graph_token)
-                # Token für jedes Item ergänzen (aus _itemId)
                 for item in items:
                     iid = item.get("_itemId")
                     if iid:
                         item["Token"] = encode_token(int(iid))
-                return func.HttpResponse(
-                    json.dumps(items, ensure_ascii=False),
-                    mimetype="application/json",
-                )
+                return json_resp(items)
             except Exception as e:
                 logging.exception("demo GET all error")
-                return func.HttpResponse(
-                    json.dumps({"error": str(e)}),
-                    status_code=500, mimetype="application/json",
-                )
+                return json_resp({"error": str(e)}, 500)
 
         # Einzelner Eintrag per Token (für Interessenten-Seite)
         item_id = decode_token(token)
         if item_id is None:
-            return func.HttpResponse(
-                json.dumps({"error": "Ungültiger Token"}),
-                status_code=400, mimetype="application/json",
-            )
+            return json_resp({"error": "Ungültiger Token"}, 400)
         try:
             graph_token = get_app_token()
             fields = get_item_by_id(graph_token, item_id)
             if fields is None:
-                return func.HttpResponse(
-                    json.dumps({"error": "Interessent nicht gefunden"}),
-                    status_code=404, mimetype="application/json",
-                )
+                return json_resp({"error": "Interessent nicht gefunden"}, 404)
             if not fields.get("Aktiv", True):
-                return func.HttpResponse(
-                    json.dumps({"error": "Demo-Zugang wurde deaktiviert"}),
-                    status_code=410, mimetype="application/json",
-                )
+                return json_resp({"error": "Demo-Zugang wurde deaktiviert"}, 410)
 
-            # Nur sichere Felder zurückgeben (kein SachbearbeiterEmail etc.)
             public = {
-                "name":     fields.get("Title", ""),
-                "firma":    fields.get("Firma", ""),
-                "produkt":  fields.get("Produkt", ""),
-                "aktiv":    fields.get("Aktiv", True),
+                "name":    fields.get("Title", ""),
+                "firma":   fields.get("Firma", ""),
+                "produkt": fields.get("Produkt", ""),
+                "aktiv":   fields.get("Aktiv", True),
             }
-            mobile = MOBILE_DATA.get(public["produkt"], {})
-            public["mobile"] = mobile
-
-            return func.HttpResponse(
-                json.dumps(public, ensure_ascii=False),
-                mimetype="application/json",
-            )
+            public["mobile"] = MOBILE_DATA.get(public["produkt"], {})
+            return json_resp(public)
         except Exception as e:
             logging.exception("demo GET single error")
-            return func.HttpResponse(
-                json.dumps({"error": str(e)}),
-                status_code=500, mimetype="application/json",
-            )
+            return json_resp({"error": str(e)}, 500)
 
     # ------------------------------------------------------------------
     # POST – Interessenten anlegen oder aktualisieren (Management)
     # ------------------------------------------------------------------
     if req.method == "POST":
         if not require_admin(req):
-            return func.HttpResponse(
-                json.dumps({"error": "Unauthorized"}),
-                status_code=401, mimetype="application/json",
-            )
+            return json_resp({"error": "Unauthorized"}, 401)
         try:
             body = req.get_json()
         except Exception:
-            return func.HttpResponse(
-                json.dumps({"error": "Kein gültiges JSON"}),
-                status_code=400, mimetype="application/json",
-            )
+            return json_resp({"error": "Kein gültiges JSON"}, 400)
 
-        action = body.get("action", "create")  # create | update | deactivate | extend
+        action = body.get("action", "create")
 
         try:
             graph_token = get_app_token()
@@ -412,10 +406,7 @@ def demo(req: func.HttpRequest) -> func.HttpResponse:
                 required = ["name", "firma", "email", "produkt", "sachbearbeiterEmail"]
                 for f in required:
                     if not body.get(f):
-                        return func.HttpResponse(
-                            json.dumps({"error": f"Feld '{f}' fehlt"}),
-                            status_code=400, mimetype="application/json",
-                        )
+                        return json_resp({"error": f"Feld '{f}' fehlt"}, 400)
                 fields = {
                     "Title":               body["name"],
                     "Firma":               body["firma"],
@@ -430,90 +421,65 @@ def demo(req: func.HttpRequest) -> func.HttpResponse:
                 created = create_item(graph_token, fields)
                 item_id = int(created["id"])
                 token = encode_token(item_id)
-                # Token sofort in Liste speichern
                 update_item(graph_token, item_id, {"Token": token})
-
-                return func.HttpResponse(
-                    json.dumps({"success": True, "itemId": item_id,
-                                "token": token}, ensure_ascii=False),
-                    status_code=201, mimetype="application/json",
-                )
+                return json_resp({"success": True, "itemId": item_id, "token": token}, 201)
 
             if action in ("update", "deactivate", "extend"):
                 item_id = body.get("itemId")
                 if not item_id:
-                    return func.HttpResponse(
-                        json.dumps({"error": "itemId fehlt"}),
-                        status_code=400, mimetype="application/json",
-                    )
+                    return json_resp({"error": "itemId fehlt"}, 400)
                 item_id = int(item_id)
 
                 if action == "deactivate":
                     update_item(graph_token, item_id, {"Aktiv": False})
                 elif action == "extend":
                     update_item(graph_token, item_id, {"Aktiv": True})
-                else:  # generic update
+                else:
                     allowed = ["Notizen", "SachbearbeiterEmail", "Aktiv"]
                     patch = {k: body[k] for k in allowed if k in body}
                     if patch:
                         update_item(graph_token, item_id, patch)
+                return json_resp({"success": True})
 
-                return func.HttpResponse(
-                    json.dumps({"success": True}),
-                    mimetype="application/json",
-                )
-
-            return func.HttpResponse(
-                json.dumps({"error": f"Unbekannte action: {action}"}),
-                status_code=400, mimetype="application/json",
-            )
+            return json_resp({"error": f"Unbekannte action: {action}"}, 400)
 
         except Exception as e:
             logging.exception("demo POST error")
-            return func.HttpResponse(
-                json.dumps({"error": str(e)}),
-                status_code=500, mimetype="application/json",
-            )
+            return json_resp({"error": str(e)}, 500)
 
 
 # ---------------------------------------------------------------------------
 # Endpunkt: POST /api/demo-track
 # ---------------------------------------------------------------------------
 
-@app.route(route="demo-track", methods=["POST"],
+@app.route(route="demo-track", methods=["POST", "OPTIONS"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def demo_track(req: func.HttpRequest) -> func.HttpResponse:
     """Aufgerufen von der Interessenten-Seite beim Laden der Seite."""
     logging.info("demo-track")
+
+    if req.method == "OPTIONS":
+        return options_resp()
+
     try:
         body = req.get_json()
         token = body.get("token", "")
     except Exception:
-        return func.HttpResponse(
-            json.dumps({"error": "Kein gültiges JSON"}),
-            status_code=400, mimetype="application/json",
-        )
+        return json_resp({"error": "Kein gültiges JSON"}, 400)
 
     item_id = decode_token(token)
     if item_id is None:
-        return func.HttpResponse(
-            json.dumps({"error": "Ungültiger Token"}),
-            status_code=400, mimetype="application/json",
-        )
+        return json_resp({"error": "Ungültiger Token"}, 400)
 
     try:
         graph_token = get_app_token()
         fields = get_item_by_id(graph_token, item_id)
         if fields is None:
-            return func.HttpResponse(
-                json.dumps({"error": "Nicht gefunden"}),
-                status_code=404, mimetype="application/json",
-            )
+            return json_resp({"error": "Nicht gefunden"}, 404)
 
         already_tracked = fields.get("LinkGeoeffnet", False)
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # Immer Zeitstempel aktualisieren, Sachbearbeiter nur beim ersten Mal
         update_item(graph_token, item_id, {
             "LinkGeoeffnet":   True,
             "LinkGeoeffnetAm": now_iso,
@@ -529,54 +495,40 @@ def demo_track(req: func.HttpRequest) -> func.HttpResponse:
                     graph_token,
                 )
 
-        return func.HttpResponse(
-            json.dumps({"success": True}),
-            mimetype="application/json",
-        )
+        return json_resp({"success": True})
     except Exception as e:
         logging.exception("demo-track error")
-        return func.HttpResponse(
-            json.dumps({"error": str(e)}),
-            status_code=500, mimetype="application/json",
-        )
+        return json_resp({"error": str(e)}, 500)
 
 
 # ---------------------------------------------------------------------------
 # Endpunkt: POST /api/demo-mail
 # ---------------------------------------------------------------------------
 
-@app.route(route="demo-mail", methods=["POST"],
+@app.route(route="demo-mail", methods=["POST", "OPTIONS"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def demo_mail(req: func.HttpRequest) -> func.HttpResponse:
     """Sendet die personalisierte Demo-Mail an den Interessenten."""
     logging.info("demo-mail")
+
+    if req.method == "OPTIONS":
+        return options_resp()
+
     if not require_admin(req):
-        return func.HttpResponse(
-            json.dumps({"error": "Unauthorized"}),
-            status_code=401, mimetype="application/json",
-        )
+        return json_resp({"error": "Unauthorized"}, 401)
     try:
         body = req.get_json()
         item_id = int(body.get("itemId", 0))
         if not item_id:
-            return func.HttpResponse(
-                json.dumps({"error": "itemId fehlt"}),
-                status_code=400, mimetype="application/json",
-            )
+            return json_resp({"error": "itemId fehlt"}, 400)
     except Exception:
-        return func.HttpResponse(
-            json.dumps({"error": "Kein gültiges JSON"}),
-            status_code=400, mimetype="application/json",
-        )
+        return json_resp({"error": "Kein gültiges JSON"}, 400)
 
     try:
         graph_token = get_app_token()
         fields = get_item_by_id(graph_token, item_id)
         if fields is None:
-            return func.HttpResponse(
-                json.dumps({"error": "Interessent nicht gefunden"}),
-                status_code=404, mimetype="application/json",
-            )
+            return json_resp({"error": "Interessent nicht gefunden"}, 404)
 
         token   = encode_token(item_id)
         name    = fields.get("Title", "")
@@ -590,22 +542,15 @@ def demo_mail(req: func.HttpRequest) -> func.HttpResponse:
 
         send_graph_email(email, subject, html_body, graph_token)
 
-        # Status in SP aktualisieren
         update_item(graph_token, item_id, {
             "MailGesendet": True,
             "Token":        token,
         })
 
-        return func.HttpResponse(
-            json.dumps({"success": True, "token": token}),
-            mimetype="application/json",
-        )
+        return json_resp({"success": True, "token": token})
     except Exception as e:
         logging.exception("demo-mail error")
-        return func.HttpResponse(
-            json.dumps({"error": str(e)}),
-            status_code=500, mimetype="application/json",
-        )
+        return json_resp({"error": str(e)}, 500)
 
 
 # ---------------------------------------------------------------------------
