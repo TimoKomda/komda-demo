@@ -1,6 +1,16 @@
 {
+  "routes": [
+    {
+      "route": "/api/*",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key"
+      }
+    }
+  ],
   "globalHeaders": {
-    "Access-Control-Allow-Origin": "https://demo.komda-software.de",
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key"
   }
